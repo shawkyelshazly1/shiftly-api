@@ -132,9 +132,9 @@ export const rolePermission = pgTable(
       onDelete: "set null",
     }),
   },
-  (table) => ({
-    pk: primaryKey({ columns: [table.roleId, table.permissionId] }),
-  })
+  (table) => [
+    primaryKey({ columns: [table.roleId, table.permissionId] }),
+  ]
 );
 
 export const userRelations = relations(user, ({ many, one }) => ({

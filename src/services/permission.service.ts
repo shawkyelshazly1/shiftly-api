@@ -64,10 +64,7 @@ export async function getDefaultRole() {
 /**
  * Get all permissions for a user (for client-side caching)
  */
-export async function getUserPermissions(
-  userId: string,
-  roleId: string
-): Promise<string[]> {
+export async function getUserPermissions(roleId: string): Promise<string[]> {
   const permissions = await getPermissionsByRoleId(roleId);
   return permissions.map((p) => p.name);
 }

@@ -1,9 +1,34 @@
+import { Permission } from "@/constants/permissions";
 import { getPermissionsByRoleId } from "@/services/permission.service";
 import { Env } from "@/types";
 import { createMiddleware } from "hono/factory";
 
+/**
+ * Check if user has permission, supporting wildcards
+ * Examples:
+ *   - "*" matches everything
+ *   - "users:*" matches "users:read", "users:create", etc.
+ *   - "users:read" matches exactly "users:read"
+ */
+function hasPermission(
+  userPermissions: string[],
+  requiredPermission: string
+): boolean {
+  // Direct match
+  if (userPermissions.includes(requiredPermission)) return true;
+
+  // Global wildcard (admin)
+  if (userPermissions.includes("*")) return true;
+
+  // Resource wildcard (e.g., "users:*" matches "users:read")
+  const [resource] = requiredPermission.split(":");
+  if (userPermissions.includes(`${resource}:*`)) return true;
+
+  return false;
+}
+
 // require permissions middleware , always check DB no client trust
-export const requirePermission = (...requiredPermissions: string[]) => {
+export const requirePermission = (...requiredPermissions: Permission[]) => {
   return createMiddleware<Env>(async (c, next) => {
     const user = c.get("user");
 
@@ -21,7 +46,7 @@ export const requirePermission = (...requiredPermissions: string[]) => {
 
     //check if user has required permissions
     const hasAllRequiredPermissions = requiredPermissions.every((perm) =>
-      permissionNames.includes(perm)
+      hasPermission(permissionNames, perm)
     );
 
     if (!hasAllRequiredPermissions) {
@@ -40,7 +65,7 @@ export const requirePermission = (...requiredPermissions: string[]) => {
 };
 
 //   Requires at least one of the specified permissions
-export const requireAnyPermission = (...permissions: string[]) => {
+export const requireAnyPermission = (...permissions: Permission[]) => {
   return createMiddleware<Env>(async (c, next) => {
     const user = c.get("user");
 
@@ -56,7 +81,7 @@ export const requireAnyPermission = (...permissions: string[]) => {
     const permissionNames = userPermissions.map((p) => p.name);
 
     const hasAnyPermission = permissions.some((perm) =>
-      permissionNames.includes(perm)
+      hasPermission(permissionNames, perm)
     );
 
     if (!hasAnyPermission) {
