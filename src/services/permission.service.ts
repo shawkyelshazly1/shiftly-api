@@ -5,8 +5,60 @@ import {
   permission,
   rolePermission,
   role,
+  userPermission,
 } from "../db/schema";
 import { eq } from "drizzle-orm";
+
+/**
+ * Fetches direct permissions assigned to a user (not from role)
+ */
+export async function getDirectUserPermissions(
+  userId: string
+): Promise<Omit<Permission, "createdAt">[]> {
+  const results = await db
+    .select({
+      id: permission.id,
+      name: permission.name,
+      resource: permission.resource,
+      action: permission.action,
+      description: permission.description,
+    })
+    .from(userPermission)
+    .innerJoin(permission, eq(userPermission.permissionId, permission.id))
+    .where(eq(userPermission.userId, userId));
+
+  return results;
+}
+
+/**
+ * get all user  permissions ( role + custom)
+ */
+export async function getAllUserPermissions(
+  userId: string,
+  roleId: string
+): Promise<{
+  all: string[];
+  rolePermissions: string[];
+  directPermissions: string[];
+}> {
+  const [rolePerms, directPerms] = await Promise.all([
+    getPermissionsByRoleId(roleId),
+    getDirectUserPermissions(userId),
+  ]);
+
+  const rolePermissionNames = rolePerms.map((p) => p.name);
+  const directPermissionNames = directPerms.map((p) => p.name);
+
+  const all = Array.from(
+    new Set([...rolePermissionNames, ...directPermissionNames])
+  );
+
+  return {
+    all,
+    rolePermissions: rolePermissionNames,
+    directPermissions: directPermissionNames,
+  };
+}
 
 /**
  * Fetches permissions for a role from DB
@@ -28,6 +80,16 @@ export async function getPermissionsByRoleId(
     .where(eq(rolePermission.roleId, roleId));
 
   return results;
+}
+
+/**
+ * Get all permissions (for UI dropdowns)
+ */
+export async function getAllPermissions(): Promise<Permission[]> {
+  return db
+    .select()
+    .from(permission)
+    .orderBy(permission.resource, permission.action);
 }
 
 /**

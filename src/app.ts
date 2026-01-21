@@ -18,7 +18,7 @@ export const createApp = () => {
     cors({
       origin: process.env.BETTER_AUTH_URL!,
       allowHeaders: ["Content-Type", "Authorization"],
-      allowMethods: ["POST", "GET", "OPTIONS", "PUT", "DELETE"],
+      allowMethods: ["POST", "GET", "OPTIONS", "PUT", "DELETE", "PATCH"],
       exposeHeaders: ["Content-Length"],
       maxAge: 600,
       credentials: true,

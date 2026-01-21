@@ -1,5 +1,5 @@
 import { Permission } from "@/constants/permissions";
-import { getPermissionsByRoleId } from "@/services/permission.service";
+import { getAllUserPermissions } from "@/services/permission.service";
 import { Env } from "@/types";
 import { createMiddleware } from "hono/factory";
 
@@ -41,8 +41,10 @@ export const requirePermission = (...requiredPermissions: Permission[]) => {
     }
 
     // get permossions from DB always
-    const userPermissions = await getPermissionsByRoleId(user.roleId);
-    const permissionNames = userPermissions.map((p) => p.name);
+    const { all: permissionNames } = await getAllUserPermissions(
+      user.id,
+      user.roleId
+    );
 
     //check if user has required permissions
     const hasAllRequiredPermissions = requiredPermissions.every((perm) =>
@@ -77,8 +79,10 @@ export const requireAnyPermission = (...permissions: Permission[]) => {
       return c.json({ error: "No role assigned", code: "NO_ROLE" }, 403);
     }
 
-    const userPermissions = await getPermissionsByRoleId(user.roleId);
-    const permissionNames = userPermissions.map((p) => p.name);
+    const { all: permissionNames } = await getAllUserPermissions(
+      user.id,
+      user.roleId
+    );
 
     const hasAnyPermission = permissions.some((perm) =>
       hasPermission(permissionNames, perm)
