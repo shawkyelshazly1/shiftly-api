@@ -66,5 +66,6 @@ export async function getDefaultRole() {
  */
 export async function getUserPermissions(roleId: string): Promise<string[]> {
   const permissions = await getPermissionsByRoleId(roleId);
+
   return permissions.map((p) => p.name);
 }

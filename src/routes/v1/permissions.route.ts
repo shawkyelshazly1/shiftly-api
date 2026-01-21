@@ -15,7 +15,7 @@ permissions.get("/me", requireAuth, async (c) => {
     return c.json({ permissions: [], role: null });
   }
 
-  const userPermissions = await getUserPermissions(user.id, user.roleId);
+  const userPermissions = await getUserPermissions(user.roleId);
 
   return c.json({ permissions: userPermissions, roleId: user.roleId });
 });
