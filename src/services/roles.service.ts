@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { role, rolePermission } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { getRoleWithPermissions } from "./permission.service";
 
 export type CreateRoleInput = {
@@ -76,12 +76,12 @@ export const updateRole = async (roleId: string, roleData: UpdateRoleInput) => {
 };
 
 /**
- * Delete a role (only if not system role)
+ * Soft delete a role (only if not system role)
  */
 export const deleteRole = async (roleId: string) => {
   // Check if system role
   const existingRole = await db.query.role.findFirst({
-    where: eq(role.id, roleId),
+    where: and(eq(role.id, roleId), isNull(role.deletedAt)),
   });
 
   if (!existingRole) {
@@ -92,15 +92,18 @@ export const deleteRole = async (roleId: string) => {
     throw new Error("Cannot delete system role");
   }
 
-  // Cascade delete will handle rolePermission via FK
-  await db.delete(role).where(eq(role.id, roleId));
+  await db
+    .update(role)
+    .set({ deletedAt: new Date() })
+    .where(eq(role.id, roleId));
 };
 
 /**
- * Get all roles
+ * Get all roles (excludes soft-deleted)
  */
 export const getAllRoles = async () => {
   const roles = await db.query.role.findMany({
+    where: isNull(role.deletedAt),
     with: {
       permissions: {
         with: {
@@ -111,8 +114,8 @@ export const getAllRoles = async () => {
   });
 
   // Flatten permissions structure
-  return roles.map((role) => ({
-    ...role,
-    permissions: role.permissions.map((rp) => rp.permission),
+  return roles.map((r) => ({
+    ...r,
+    permissions: r.permissions.map((rp) => rp.permission),
   }));
 };

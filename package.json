@@ -13,6 +13,7 @@
     "drizzle-orm": "^0.45.1",
     "hono": "^4.11.4",
     "pg": "^8.17.1",
+    "resend": "^6.8.0",
     "uuid": "^13.0.0"
   },
   "devDependencies": {
