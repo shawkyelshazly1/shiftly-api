@@ -28,7 +28,10 @@ export const user = pgTable(
       .notNull(),
     deletedAt: timestamp("deleted_at"),
   },
-  (table) => [index("user_roleId_idx").on(table.roleId)]
+  (table) => [
+    index("user_roleId_idx").on(table.roleId),
+    index("user_deletedAt_idx").on(table.deletedAt),
+  ]
 );
 
 export const session = pgTable(
@@ -92,25 +95,32 @@ export const verification = pgTable(
   (table) => [index("verification_identifier_idx").on(table.identifier)]
 );
 
-export const role = pgTable("role", {
-  id: text("id")
-    .primaryKey()
-    .$default(() => uuidv4()),
-  name: text("name").notNull().unique(),
-  description: text("description"),
-  // Prevent deletion/modification of system roles
-  isSystem: boolean("is_system").notNull().default(false),
+export const role = pgTable(
+  "role",
+  {
+    id: text("id")
+      .primaryKey()
+      .$default(() => uuidv4()),
+    name: text("name").notNull().unique(),
+    description: text("description"),
+    // Prevent deletion/modification of system roles
+    isSystem: boolean("is_system").notNull().default(false),
 
-  // Default role assigned to new users
-  isDefault: boolean("is_default").notNull().default(false),
+    // Default role assigned to new users
+    isDefault: boolean("is_default").notNull().default(false),
 
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at")
-    .notNull()
-    .defaultNow()
-    .$onUpdate(() => new Date()),
-  deletedAt: timestamp("deleted_at"),
-});
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+    deletedAt: timestamp("deleted_at"),
+  },
+  (table) => [
+    index("role_deletedAt_idx").on(table.deletedAt),
+    index("role_name_idx").on(table.name),
+  ]
+);
 
 export const permission = pgTable("permission", {
   id: text("id")
@@ -129,19 +139,23 @@ export const permission = pgTable("permission", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-export const team = pgTable("team", {
-  id: text("id")
-    .primaryKey()
-    .$default(() => uuidv4()),
-  name: text("name").notNull().unique(),
-  description: text("description"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at")
-    .defaultNow()
-    .$onUpdate(() => /* @__PURE__ */ new Date())
-    .notNull(),
-  deletedAt: timestamp("deleted_at"),
-});
+export const team = pgTable(
+  "team",
+  {
+    id: text("id")
+      .primaryKey()
+      .$default(() => uuidv4()),
+    name: text("name").notNull().unique(),
+    description: text("description"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+    deletedAt: timestamp("deleted_at"),
+  },
+  (table) => [index("team_deletedAt_idx").on(table.deletedAt)]
+);
 
 //  many to many relation ( team <> user )
 export const teamMember = pgTable(
@@ -198,6 +212,10 @@ export const invitation = pgTable(
     index("invitation_email_idx").on(table.email),
     index("invitation_status_idx").on(table.status),
     index("invitation_invitedById_idx").on(table.invitedById),
+    index("invitation_userId_idx").on(table.userId),
+    index("invitation_token_idx").on(table.token),
+    index("invitation_userId_status_idx").on(table.userId, table.status),
+    index("invitation_createdAt_idx").on(table.createdAt),
   ]
 );
 

@@ -1,6 +1,15 @@
 import { db } from "@/db";
 import { team, teamMember, user } from "@/db/schema";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, count } from "drizzle-orm";
+import {
+  PaginationParams,
+  buildPaginatedResponse,
+  buildSearchCondition,
+  buildSortOrder,
+  calculateOffset,
+  DEFAULT_PAGE,
+  DEFAULT_PAGE_SIZE,
+} from "@/utils/pagination";
 
 export type CreateTeamInput = {
   name: string;
@@ -15,12 +24,63 @@ export type UpdateTeamMembersInput = {
 };
 
 /**
+ * Get global team count (independent of filters)
+ */
+export const getTeamsCount = async () => {
+  const [result] = await db
+    .select({ total: count() })
+    .from(team)
+    .where(isNull(team.deletedAt));
+
+  return { total: result.total };
+};
+
+/**
  * Get all teams (excludes soft-deleted)
  */
 export const getAllTeams = async () => {
   return await db.query.team.findMany({
     where: isNull(team.deletedAt),
   });
+};
+
+/**
+ * Get all teams with pagination
+ */
+export const getAllTeamsPaginated = async (params: PaginationParams) => {
+  const page = params.page || DEFAULT_PAGE;
+  const pageSize = params.pageSize || DEFAULT_PAGE_SIZE;
+  const offset = calculateOffset(page, pageSize);
+
+  const searchCondition = buildSearchCondition(params.search, [team.name, team.description]);
+  const whereConditions = searchCondition
+    ? and(isNull(team.deletedAt), searchCondition)
+    : isNull(team.deletedAt);
+
+  const columnMap = { name: team.name, createdAt: team.createdAt };
+  const orderBy = buildSortOrder(params.sortBy, params.sortOrder, columnMap, team.createdAt);
+
+  // Run count and data queries in parallel
+  const [countResult, data] = await Promise.all([
+    db.select({ total: count() }).from(team).where(whereConditions),
+    db
+      .select({
+        id: team.id,
+        name: team.name,
+        description: team.description,
+        createdAt: team.createdAt,
+        updatedAt: team.updatedAt,
+      })
+      .from(team)
+      .where(whereConditions)
+      .orderBy(orderBy)
+      .limit(pageSize)
+      .offset(offset),
+  ]);
+
+  const [{ total }] = countResult;
+
+  return buildPaginatedResponse(data, total, params);
 };
 
 /**
@@ -42,20 +102,23 @@ export const getTeamById = async (teamId: string) => {
 export const createTeam = async (teamData: CreateTeamInput) => {
   const { teamMemberIds, ...teamFields } = teamData;
 
+  // Normalize team name: lowercase and trim
+  const normalizedName = teamData.name.trim().toLowerCase();
+
   // create team
   const [newTeam] = await db
     .insert(team)
     .values({
-      name: teamData.name,
+      name: normalizedName,
       description: teamData.description || "",
     })
     .returning();
 
   // add users to team
   if (teamMemberIds && teamMemberIds.length > 0) {
-    // ensure users in Db
+    // ensure users in Db - only fetch needed columns
     const foundUsers = await db
-      .select()
+      .select({ id: user.id })
       .from(user)
       .where(inArray(user.id, teamMemberIds));
 
@@ -99,9 +162,15 @@ export const updateTeam = async (teamId: string, teamData: UpdateTeamInput) => {
   if (Object.keys(teamData).length < 1)
     throw new Error("Failed to update team");
 
+  // Normalize team name if provided
+  const normalizedData = {
+    ...teamData,
+    ...(teamData.name && { name: teamData.name.trim().toLowerCase() }),
+  };
+
   return await db
     .update(team)
-    .set(teamData)
+    .set(normalizedData)
     .where(eq(team.id, teamId))
     .returning();
 };
@@ -114,10 +183,11 @@ export const addTeamMembers = async (
   teamId: string,
   teamMembersData: UpdateTeamMembersInput
 ) => {
-  const [targetTeam] = await db.select().from(team).where(eq(team.id, teamId));
+  // Only fetch needed columns for validation
+  const [targetTeam] = await db.select({ id: team.id }).from(team).where(eq(team.id, teamId));
 
   const targetUsers = await db
-    .select()
+    .select({ id: user.id })
     .from(user)
     .where(inArray(user.id, teamMembersData.teamMembersIds));
 
@@ -142,10 +212,11 @@ export const removeTeamMembers = async (
   teamId: string,
   teamMembersData: UpdateTeamMembersInput
 ) => {
-  const [targetTeam] = await db.select().from(team).where(eq(team.id, teamId));
+  // Only fetch needed columns for validation
+  const [targetTeam] = await db.select({ id: team.id }).from(team).where(eq(team.id, teamId));
 
   const targetUsers = await db
-    .select()
+    .select({ id: user.id })
     .from(user)
     .where(inArray(user.id, teamMembersData.teamMembersIds));
 
@@ -155,5 +226,10 @@ export const removeTeamMembers = async (
 
   const currentUserIds = targetUsers.map((user) => user.id);
 
-  await db.delete(teamMember).where(inArray(teamMember.userId, currentUserIds));
+  await db.delete(teamMember).where(
+    and(
+      eq(teamMember.teamId, teamId),
+      inArray(teamMember.userId, currentUserIds)
+    )
+  );
 };

@@ -16,6 +16,7 @@ export const sessionMiddleware = createMiddleware<Env>(async (c, next) => {
 // requires authenticated user - check logged in only
 export const requireAuth = createMiddleware<Env>(async (c, next) => {
   const user = c.get("user");
+
   if (!user) {
     return c.json({ error: "Unauthorized!", code: "UNAUTHORIZED" }, 401);
   }

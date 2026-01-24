@@ -3,57 +3,84 @@ import { requireAuth, requirePermission } from "@/middleware";
 import {
   addTeamMembers,
   createTeam,
-  CreateTeamInput,
   deleteTeam,
   getAllTeams,
+  getAllTeamsPaginated,
   getTeamById,
+  getTeamsCount,
   removeTeamMembers,
   updateTeam,
-  UpdateTeamInput,
-  UpdateTeamMembersInput,
 } from "@/services/teams.service";
 import { Env } from "@/types";
 import { Hono } from "hono";
+import { parsePaginationParams } from "@/utils/pagination";
+import { zValidator } from "@hono/zod-validator";
+import {
+  createTeamSchema,
+  updateTeamSchema,
+  updateTeamMembersSchema,
+} from "@/schemas";
 
 const teams = new Hono<Env>();
 
 teams.use("*", requireAuth);
 
 // GET /api/v1/teams
-// fetch all teams
+// fetch all teams (supports pagination via query params)
 teams.get("/", requirePermission(PERMISSIONS.TEAMS_READ), async (c) => {
-  const teams = await getAllTeams();
-  return c.json(teams);
+  const query = c.req.query();
+
+  if (!query.page && !query.pageSize && !query.search) {
+    const teams = await getAllTeams();
+    return c.json(teams);
+  }
+
+  const params = parsePaginationParams(query);
+  const result = await getAllTeamsPaginated(params);
+  return c.json(result);
 });
 
 // POST /api/v1/teams
 // create new team
-teams.post("/", requirePermission(PERMISSIONS.TEAMS_CREATE), async (c) => {
-  try {
-    const body: CreateTeamInput = await c.req.json();
-
-    if (!body.name) {
-      return c.json({ error: "Name is required" }, 400);
+teams.post(
+  "/",
+  requirePermission(PERMISSIONS.TEAMS_CREATE),
+  zValidator("json", createTeamSchema),
+  async (c) => {
+    try {
+      const body = c.req.valid("json");
+      const newTeam = await createTeam(body);
+      return c.json(newTeam, 201);
+    } catch (error) {
+      console.error("Failed to create team: ", error);
+      return c.json({ error: "Unable to create team" }, 500);
     }
-    const newTeam = await createTeam(body);
-    return c.json(newTeam, 201);
+  }
+);
+
+// GET /api/v1/teams/count
+// Get global team count
+teams.get("/count", requirePermission(PERMISSIONS.TEAMS_READ), async (c) => {
+  try {
+    const counts = await getTeamsCount();
+    return c.json(counts);
   } catch (error) {
-    console.error("Failed to create team: ", error);
-    return c.json({ error: "Unable to create team" }, 500);
+    console.error("Failed to get team counts: ", error);
+    return c.json({ error: "Unable to get team counts" }, 500);
   }
 });
 
 // DELETE /api/v1/teams/:id
 // delete team by id
 teams.delete("/:id", requirePermission(PERMISSIONS.TEAMS_DELETE), async (c) => {
-  const teamId = await c.req.param("id");
+  const teamId = c.req.param("id");
 
   try {
     await deleteTeam(teamId);
     return c.json({ success: true });
   } catch (error) {
     console.error("Failed to delete team: ", error);
-    return c.json({ error: "Unable to delete team" }, 400);
+    return c.json({ error: "Unable to delete team" }, 500);
   }
 });
 
@@ -63,11 +90,11 @@ teams.get(
   "/:id",
   requirePermission(PERMISSIONS.TEAMS_READ, PERMISSIONS.USERS_READ),
   async (c) => {
-    const teamId = await c.req.param("id");
+    const teamId = c.req.param("id");
     try {
       const team = await getTeamById(teamId);
 
-      if (!team) return c.json({ error: "Team not found" }, 400);
+      if (!team) return c.json({ error: "Team not found" }, 404);
 
       return c.json(team);
     } catch (error) {
@@ -82,15 +109,16 @@ teams.get(
 teams.patch(
   "/:id",
   requirePermission(PERMISSIONS.TEAMS_UPDATE, PERMISSIONS.USERS_UPDATE),
+  zValidator("json", updateTeamSchema),
   async (c) => {
-    const teamId = await c.req.param("id");
-    const body: UpdateTeamInput = await c.req.json();
+    const teamId = c.req.param("id");
+    const body = c.req.valid("json");
     try {
-      const team = await getTeamById(teamId);
-
-      if (!team) return c.json({ error: "Team not found" }, 400);
-
       const updatedTeam = await updateTeam(teamId, body);
+
+      if (!updatedTeam || updatedTeam.length === 0) {
+        return c.json({ error: "Team not found" }, 404);
+      }
 
       return c.json(updatedTeam);
     } catch (error) {
@@ -105,38 +133,37 @@ teams.patch(
 teams.post(
   "/:id/members",
   requirePermission(PERMISSIONS.TEAMS_UPDATE),
+  zValidator("json", updateTeamMembersSchema),
   async (c) => {
     try {
-      const teamId = await c.req.param("id");
-      const body: UpdateTeamMembersInput = await c.req.json();
+      const teamId = c.req.param("id");
+      const body = c.req.valid("json");
 
-      if (!body.teamMembersIds || body.teamMembersIds.length === 0)
-        return c.json({ error: "Members Ids are rquired!" }, 500);
-
-      let updatedTeam = await addTeamMembers(teamId, body);
+      const updatedTeam = await addTeamMembers(teamId, body);
       return c.json(updatedTeam);
     } catch (error) {
       console.error("Failed to add team members: ", error);
-      return c.json({ error: "unable to add team members" }, 500);
+      return c.json({ error: "Unable to add team members" }, 500);
     }
   }
 );
 
-// DELETE /api/v1/teams/:id/members
+// DELETE /api/v1/teams/:id/members/remove
 // remove team members
-teams.delete(
-  "/:id/members",
+teams.post(
+  "/:id/members/remove",
   requirePermission(PERMISSIONS.TEAMS_UPDATE),
+  zValidator("json", updateTeamMembersSchema),
   async (c) => {
-    const teamId = await c.req.param("id");
-    const body: UpdateTeamMembersInput = await c.req.json();
+    const teamId = c.req.param("id");
+    const body = c.req.valid("json");
 
     try {
       await removeTeamMembers(teamId, body);
       return c.json({ success: true });
     } catch (error) {
       console.error("Failed to remove team members: ", error);
-      return c.json({ error: "unable to remove team members" }, 500);
+      return c.json({ error: "Unable to remove team members" }, 500);
     }
   }
 );

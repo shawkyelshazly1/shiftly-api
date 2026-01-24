@@ -1,6 +1,20 @@
 import { db } from "@/db";
 import { invitation, type InvitationInput, user } from "@/db/schema";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, count, gt } from "drizzle-orm";
+import {
+  PaginationParams,
+  buildPaginatedResponse,
+  buildSearchCondition,
+  buildSortOrder,
+  calculateOffset,
+  DEFAULT_PAGE,
+  DEFAULT_PAGE_SIZE,
+} from "@/utils/pagination";
+
+// Constants for invitation expiry
+const INVITATION_VALIDITY_DAYS = 7;
+const INVITATION_VALIDITY_MS = INVITATION_VALIDITY_DAYS * 24 * 60 * 60 * 1000;
+const ONE_HOUR_MS = 60 * 60 * 1000;
 
 /**
  * Get all invitations
@@ -15,11 +29,60 @@ export const getAllInvitations = async () => {
 };
 
 /**
+ * Get paginated invitations
+ */
+export const getAllInvitationsPaginated = async (params: PaginationParams) => {
+  const page = params.page || DEFAULT_PAGE;
+  const pageSize = params.pageSize || DEFAULT_PAGE_SIZE;
+  const offset = calculateOffset(page, pageSize);
+
+  const searchCondition = buildSearchCondition(params.search, [
+    invitation.email,
+    invitation.name,
+  ]);
+
+  const columnMap: Record<string, typeof invitation.createdAt | typeof invitation.name | typeof invitation.email | typeof invitation.status> = {
+    name: invitation.name,
+    email: invitation.email,
+    status: invitation.status,
+    createdAt: invitation.createdAt,
+  };
+
+  const orderBy = buildSortOrder(
+    params.sortBy,
+    params.sortOrder,
+    columnMap,
+    invitation.createdAt
+  );
+
+  const [totalResult] = await db
+    .select({ count: count() })
+    .from(invitation)
+    .where(searchCondition);
+
+  const invitations = await db.query.invitation.findMany({
+    with: {
+      role: true,
+      user: true,
+    },
+    where: searchCondition,
+    orderBy: [orderBy],
+    limit: pageSize,
+    offset,
+  });
+
+  return buildPaginatedResponse(invitations, totalResult.count, params);
+};
+
+/**
  * Create invitation
  */
 export const createInvitation = async (userId: string, invitedById: string) => {
-  // check if user exists
-  const [targetUser] = await db.select().from(user).where(eq(user.id, userId));
+  // check if user exists - only fetch needed columns
+  const [targetUser] = await db
+    .select({ id: user.id, email: user.email, name: user.name, roleId: user.roleId })
+    .from(user)
+    .where(eq(user.id, userId));
 
   if (!targetUser) throw new Error("User not found");
 
@@ -48,9 +111,9 @@ export const createBulkInvitations = async (
   userIds: string[],
   invitedById: string
 ) => {
-  // verify users exists
+  // verify users exists - only fetch needed columns
   const usersFound = await db
-    .select()
+    .select({ id: user.id, email: user.email, name: user.name, roleId: user.roleId })
     .from(user)
     .where(inArray(user.id, userIds));
 
@@ -87,46 +150,49 @@ export const regenerateInvitation = async (
   userId: string,
   invitedById: string
 ) => {
-  // find user,
-  const [targetUser] = await db.select().from(user).where(eq(user.id, userId));
+  // find user - only fetch needed columns
+  const [targetUser] = await db
+    .select({ id: user.id, email: user.email, name: user.name, roleId: user.roleId })
+    .from(user)
+    .where(eq(user.id, userId));
 
   if (!targetUser) throw new Error("User not found");
 
-  // check if user accepted any invitaiton already, else if any still valid get it, else generate new one.
-
-  const userInvitations = await db
-    .select()
+  // Check if user has accepted any invitation (SQL filtered)
+  const [acceptedInvitation] = await db
+    .select({ id: invitation.id })
     .from(invitation)
-    .where(eq(invitation.userId, userId));
+    .where(and(eq(invitation.userId, userId), eq(invitation.status, "accepted")))
+    .limit(1);
 
-  if (userInvitations.length === 0)
-    return await createInvitation(userId, invitedById);
+  if (acceptedInvitation) throw new Error("User accepted invitation already");
 
-  const acceptedInvitations = userInvitations.filter(
-    (inv) => inv.status === "accepted"
-  );
+  // Check for any valid (non-expired, pending) invitation
+  const [validInvitation] = await db
+    .select({ id: invitation.id })
+    .from(invitation)
+    .where(
+      and(
+        eq(invitation.userId, userId),
+        eq(invitation.status, "pending"),
+        gt(invitation.expiresAt, new Date())
+      )
+    )
+    .limit(1);
 
-  if (acceptedInvitations.length !== 0)
-    throw new Error("User accepted invitation already");
-
-  const validInvitations = userInvitations.find(
-    (inv) => inv.expiresAt > new Date(Date.now())
-  );
-
-  // invalidate the current invitation
-  if (validInvitations)
-    await db
-      .update(invitation)
-      .set({
-        status: "expired",
-        expiresAt: new Date(Date.now() - 60 * 60 * 1000),
-      })
-      .where(eq(invitation.userId, userId));
+  // Invalidate any pending invitations for this user
+  await db
+    .update(invitation)
+    .set({
+      status: "expired",
+      expiresAt: new Date(Date.now() - ONE_HOUR_MS),
+    })
+    .where(and(eq(invitation.userId, userId), eq(invitation.status, "pending")));
 
   // generate new invitation
   const tokenData = generateInvitationToken();
 
-  let [newInvitation] = await db
+  const [newInvitation] = await db
     .insert(invitation)
     .values({
       email: targetUser.email,
@@ -146,11 +212,9 @@ export const regenerateInvitation = async (
  * cancel invitation
  */
 export const cancelInvitation = async (userId: string) => {
-  const [targetUser] = await db.select().from(user).where(eq(user.id, userId));
-
-  // target inviation
+  // target invitation - only fetch needed columns
   const [userActiveInvitation] = await db
-    .select()
+    .select({ id: invitation.id })
     .from(invitation)
     .where(
       and(eq(invitation.userId, userId), eq(invitation.status, "pending"))
@@ -161,8 +225,8 @@ export const cancelInvitation = async (userId: string) => {
   await db
     .update(invitation)
     .set({
-      status: "expired",
-      expiresAt: new Date(Date.now() - 60 * 60 * 1000),
+      status: "cancelled",
+      expiresAt: new Date(Date.now() - ONE_HOUR_MS),
     })
     .where(eq(invitation.id, userActiveInvitation.id));
 };
@@ -178,7 +242,7 @@ export const verifyAcceptInvitation = async (token: string) => {
 
   if (
     !targetInvitation ||
-    targetInvitation.expiresAt < new Date(Date.now()) ||
+    targetInvitation.expiresAt < new Date() ||
     targetInvitation.status !== "pending"
   )
     throw new Error("Invalid Token");
@@ -186,8 +250,9 @@ export const verifyAcceptInvitation = async (token: string) => {
   await db
     .update(invitation)
     .set({
-      expiresAt: new Date(Date.now() - 60 * 60 * 1000),
+      expiresAt: new Date(Date.now() - ONE_HOUR_MS),
       status: "accepted",
+      acceptedAt: new Date(),
     })
     .where(eq(invitation.id, targetInvitation.id));
 
@@ -206,7 +271,7 @@ interface InvitationTokenData {
 const generateInvitationToken = (): InvitationTokenData => {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   const token = Buffer.from(bytes).toString("hex");
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const expiresAt = new Date(Date.now() + INVITATION_VALIDITY_MS);
 
   return {
     expiresAt,

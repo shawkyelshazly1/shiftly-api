@@ -1,7 +1,17 @@
 import { db } from "@/db";
 import { role, rolePermission } from "@/db/schema";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, count } from "drizzle-orm";
 import { getRoleWithPermissions } from "./permission.service";
+import { invalidatePermissionCache } from "@/middleware/permission.middleware";
+import {
+  PaginationParams,
+  buildPaginatedResponse,
+  buildSearchCondition,
+  buildSortOrder,
+  calculateOffset,
+  DEFAULT_PAGE,
+  DEFAULT_PAGE_SIZE,
+} from "@/utils/pagination";
 
 export type CreateRoleInput = {
   name: string;
@@ -19,11 +29,19 @@ export type UpdateRoleInput = Partial<CreateRoleInput>;
 export const createRole = async (roleData: CreateRoleInput) => {
   const { permissionIds, ...roleFields } = roleData;
 
+  // check if role exists
+  const [existingRole] = await db
+    .select()
+    .from(role)
+    .where(eq(role.name, roleFields.name.toLowerCase().trim()));
+
+  if (existingRole) throw new Error("Role exists already with same name");
+
   //insert role
   const [newRole] = await db
     .insert(role)
     .values({
-      name: roleFields.name,
+      name: roleFields.name.trim().toLowerCase(),
       description: roleFields.description,
       isSystem: roleFields.isSystem ?? false,
       isDefault: roleFields.isDefault ?? false,
@@ -70,6 +88,9 @@ export const updateRole = async (roleId: string, roleData: UpdateRoleInput) => {
         }))
       );
     }
+
+    // Invalidate permission cache since role permissions changed
+    invalidatePermissionCache();
   }
 
   return getRoleWithPermissions(roleId);
@@ -96,6 +117,9 @@ export const deleteRole = async (roleId: string) => {
     .update(role)
     .set({ deletedAt: new Date() })
     .where(eq(role.id, roleId));
+
+  // Invalidate permission cache since role was deleted
+  invalidatePermissionCache();
 };
 
 /**
@@ -118,4 +142,51 @@ export const getAllRoles = async () => {
     ...r,
     permissions: r.permissions.map((rp) => rp.permission),
   }));
+};
+
+/**
+ * Get all roles with pagination
+ */
+export const getAllRolesPaginated = async (params: PaginationParams) => {
+  const page = params.page || DEFAULT_PAGE;
+  const pageSize = params.pageSize || DEFAULT_PAGE_SIZE;
+  const offset = calculateOffset(page, pageSize);
+
+  const searchCondition = buildSearchCondition(params.search, [role.name, role.description]);
+  const whereConditions = searchCondition
+    ? and(isNull(role.deletedAt), searchCondition)
+    : isNull(role.deletedAt);
+
+  const columnMap = { name: role.name, createdAt: role.createdAt };
+  const orderBy = buildSortOrder(params.sortBy, params.sortOrder, columnMap, role.createdAt);
+
+  // Run count and data queries in parallel
+  const [countResult, roles] = await Promise.all([
+    db.select({ total: count() }).from(role).where(whereConditions),
+    db.query.role.findMany({
+      where: whereConditions,
+      orderBy: (r, { asc, desc }) => {
+        const sortColumn = params.sortBy === "name" ? r.name : r.createdAt;
+        return params.sortOrder === "desc" ? [desc(sortColumn)] : [asc(sortColumn)];
+      },
+      limit: pageSize,
+      offset,
+      with: {
+        permissions: {
+          with: {
+            permission: true,
+          },
+        },
+      },
+    }),
+  ]);
+
+  const [{ total }] = countResult;
+
+  const data = roles.map((r) => ({
+    ...r,
+    permissions: r.permissions.map((rp) => rp.permission),
+  }));
+
+  return buildPaginatedResponse(data, total, params);
 };

@@ -4,10 +4,12 @@ import { sendInvitationEmail } from "@/services/email.service";
 import {
   cancelInvitation,
   getAllInvitations,
+  getAllInvitationsPaginated,
   regenerateInvitation,
   verifyAcceptInvitation,
 } from "@/services/invitations.service";
 import { Env } from "@/types";
+import { parsePaginationParams } from "@/utils/pagination";
 import { Hono } from "hono";
 
 const invitations = new Hono<Env>();
@@ -30,15 +32,23 @@ invitations.post("/accept", async (c) => {
 });
 
 // GET /api/v1/invitations
-// get all invtations
+// get all invitations (supports pagination)
 invitations.get(
   "/",
   requireAuth,
   requirePermission(PERMISSIONS.USERS_ALL),
   async (c) => {
-    const invitations = await getAllInvitations();
+    const query = c.req.query();
+    const hasPaginationParams = query.page || query.pageSize || query.search;
 
-    return c.json(invitations);
+    if (hasPaginationParams) {
+      const params = parsePaginationParams(query);
+      const result = await getAllInvitationsPaginated(params);
+      return c.json(result);
+    }
+
+    const allInvitations = await getAllInvitations();
+    return c.json(allInvitations);
   }
 );
 
@@ -54,7 +64,10 @@ invitations.post(
 
     try {
       const newInvitation = await regenerateInvitation(userId, user!.id);
-      await sendInvitationEmail(newInvitation);
+      // Fire and forget - log errors but don't fail request
+      sendInvitationEmail(newInvitation).catch((err) => {
+        console.error("Failed to send resend invitation email:", err);
+      });
       return c.json({ success: true }, 201);
     } catch (error: any) {
       console.error("Failed to resend invitation: ", error);
@@ -77,10 +90,11 @@ invitations.post(
 
     try {
       await cancelInvitation(userId);
+      return c.json({ success: true });
     } catch (error: any) {
-      console.error("Failed to resend invitation: ", error);
+      console.error("Failed to cancel invitation: ", error);
       return c.json(
-        { error: error.message || "Unable to resend invitation" },
+        { error: error.message || "Unable to cancel invitation" },
         500
       );
     }

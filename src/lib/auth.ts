@@ -6,6 +6,7 @@ import * as schema from "../db/schema";
 import { getAdminRoleId } from "@/utils/roles";
 import { createAuthMiddleware } from "better-auth/api";
 import { APIError } from "better-auth/api";
+import { sendResetPasswordEmail } from "@/services/email.service";
 
 export const auth = betterAuth({
   database: drizzleAdapter(db, {
@@ -15,6 +16,12 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
     minPasswordLength: 5,
+    sendResetPassword: async ({ user, url, token }, request) => {
+      void (await sendResetPasswordEmail(user.email, url));
+    },
+    onPasswordReset: async ({ user }, request) => {
+      console.log(`Password for user ${user.email} has been reset.`);
+    },
   },
   user: {
     additionalFields: {

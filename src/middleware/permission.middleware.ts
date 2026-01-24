@@ -3,6 +3,59 @@ import { getAllUserPermissions } from "@/services/permission.service";
 import { Env } from "@/types";
 import { createMiddleware } from "hono/factory";
 
+// Permission cache with TTL (5 minutes)
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+type CacheEntry = {
+  permissions: string[];
+  expiresAt: number;
+};
+
+const permissionCache = new Map<string, CacheEntry>();
+
+function getCacheKey(userId: string, roleId: string): string {
+  return `${userId}:${roleId}`;
+}
+
+function getCachedPermissions(userId: string, roleId: string): string[] | null {
+  const key = getCacheKey(userId, roleId);
+  const entry = permissionCache.get(key);
+
+  if (!entry) return null;
+
+  if (Date.now() > entry.expiresAt) {
+    permissionCache.delete(key);
+    return null;
+  }
+
+  return entry.permissions;
+}
+
+function setCachedPermissions(userId: string, roleId: string, permissions: string[]): void {
+  const key = getCacheKey(userId, roleId);
+  permissionCache.set(key, {
+    permissions,
+    expiresAt: Date.now() + CACHE_TTL_MS,
+  });
+}
+
+/**
+ * Invalidate permission cache for a user (call when permissions change)
+ */
+export function invalidatePermissionCache(userId?: string): void {
+  if (userId) {
+    // Invalidate all entries for this user (across all roles)
+    for (const key of permissionCache.keys()) {
+      if (key.startsWith(`${userId}:`)) {
+        permissionCache.delete(key);
+      }
+    }
+  } else {
+    // Clear entire cache
+    permissionCache.clear();
+  }
+}
+
 /**
  * Check if user has permission, supporting wildcards
  * Examples:
@@ -40,11 +93,14 @@ export const requirePermission = (...requiredPermissions: Permission[]) => {
       return c.json({ error: "No role assigned", code: "NO_ROLE" }, 403);
     }
 
-    // get permossions from DB always
-    const { all: permissionNames } = await getAllUserPermissions(
-      user.id,
-      user.roleId
-    );
+    // Check cache first, then DB
+    let permissionNames = getCachedPermissions(user.id, user.roleId);
+
+    if (!permissionNames) {
+      const { all } = await getAllUserPermissions(user.id, user.roleId);
+      permissionNames = all;
+      setCachedPermissions(user.id, user.roleId, permissionNames);
+    }
 
     //check if user has required permissions
     const hasAllRequiredPermissions = requiredPermissions.every((perm) =>
@@ -79,10 +135,14 @@ export const requireAnyPermission = (...permissions: Permission[]) => {
       return c.json({ error: "No role assigned", code: "NO_ROLE" }, 403);
     }
 
-    const { all: permissionNames } = await getAllUserPermissions(
-      user.id,
-      user.roleId
-    );
+    // Check cache first, then DB
+    let permissionNames = getCachedPermissions(user.id, user.roleId);
+
+    if (!permissionNames) {
+      const { all } = await getAllUserPermissions(user.id, user.roleId);
+      permissionNames = all;
+      setCachedPermissions(user.id, user.roleId, permissionNames);
+    }
 
     const hasAnyPermission = permissions.some((perm) =>
       hasPermission(permissionNames, perm)
